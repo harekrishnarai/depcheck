@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"depcheck/cmd"
+	"github.com/harekrishnarai/depcheck/cmd"
 )
 
 func main() {
