@@ -19,6 +19,7 @@ type PackageAnalysis struct {
 	HasBreakingChanges bool
 	SecurityImplications string
 	Recommendation     string
+	CVEInfo           *CVEInfo
 }
 
 // NpmPackage represents the structure of an npm package from the registry
@@ -74,6 +75,13 @@ func AnalyzePackage(pkgName, pkgVersion string) (*PackageAnalysis, error) {
 	securityImplications := "No known security issues"
 	recommendation := "Version is up to date"
 
+	// Fetch CVE information
+	cveInfo, err := fetchCVEs(pkgName, pkgVersion, latest)
+	if err != nil {
+		// Log the error but don't fail the analysis
+		fmt.Printf("Warning: Failed to fetch CVE data: %v\n", err)
+	}
+
 	if latestVer.GreaterThan(current) {
 		if hasBreakingChanges {
 			securityImplications = "Major version upgrade may include breaking changes and security improvements"
@@ -87,6 +95,22 @@ func AnalyzePackage(pkgName, pkgVersion string) (*PackageAnalysis, error) {
 		}
 	}
 
+	// Update security implications based on CVE information
+	if cveInfo != nil && len(cveInfo.Current) > 0 {
+		highestSeverity := "Low"
+		for _, cve := range cveInfo.Current {
+			if cve.Score >= 9.0 && highestSeverity != "Critical" {
+				highestSeverity = "Critical"
+			} else if cve.Score >= 7.0 && highestSeverity != "Critical" {
+				highestSeverity = "High"
+			} else if cve.Score >= 4.0 && highestSeverity != "Critical" && highestSeverity != "High" {
+				highestSeverity = "Medium"
+			}
+		}
+		securityImplications = fmt.Sprintf("%s - %d active CVEs", highestSeverity, len(cveInfo.Current))
+		recommendation = "Upgrade recommended due to security vulnerabilities"
+	}
+
 	return &PackageAnalysis{
 		Name:                pkgName,
 		Current:            pkgVersion,
@@ -95,6 +119,7 @@ func AnalyzePackage(pkgName, pkgVersion string) (*PackageAnalysis, error) {
 		HasBreakingChanges: hasBreakingChanges,
 		SecurityImplications: securityImplications,
 		Recommendation:     recommendation,
+		CVEInfo:           cveInfo,
 	}, nil
 }
 

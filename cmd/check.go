@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/harekrishnarai/depcheck/pkg/version"
 	"github.com/olekukonko/tablewriter"
@@ -63,13 +64,13 @@ Example: depcheck check express@4.18.2`,
 			breakingChanges = color.RedString("Yes")
 		}
 
-		securityStatus := "None"
-		if analysis.HasBreakingChanges {
-			securityStatus = color.RedString("High")
-		} else if analysis.Latest != analysis.Current {
-			securityStatus = color.YellowString("Medium")
-		} else {
-			securityStatus = color.GreenString("None")
+		securityStatus := color.GreenString("None")
+		if analysis.CVEInfo != nil {
+			if len(analysis.CVEInfo.Current) > 0 {
+				securityStatus = color.RedString(analysis.SecurityImplications)
+			} else if len(analysis.CVEInfo.New) > 0 {
+				securityStatus = color.YellowString("New CVEs in target version")
+			}
 		}
 
 		table.Append([]string{
@@ -83,8 +84,55 @@ Example: depcheck check express@4.18.2`,
 		})
 
 		table.Render()
+
+		// Display CVE details if available
+		if analysis.CVEInfo != nil {
+			fmt.Println()
+			if len(analysis.CVEInfo.Current) > 0 {
+				color.Red("Current Version CVEs:")
+				displayCVEDetails(analysis.CVEInfo.Current)
+			}
+
+			if len(analysis.CVEInfo.Fixed) > 0 {
+				fmt.Println()
+				color.Green("CVEs Fixed in Patch Version:")
+				displayCVEDetails(analysis.CVEInfo.Fixed)
+			}
+
+			if len(analysis.CVEInfo.New) > 0 {
+				fmt.Println()
+				color.Yellow("New CVEs in Target Version:")
+				displayCVEDetails(analysis.CVEInfo.New)
+			}
+		}
+
 		return nil
 	},
+}
+
+func displayCVEDetails(cves []version.CVEDetails) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	for _, cve := range cves {
+		severity := cve.Severity
+		switch severity {
+		case "Critical":
+			severity = color.RedString("Critical")
+		case "High":
+			severity = color.HiRedString("High")
+		case "Medium":
+			severity = color.YellowString("Medium")
+		case "Low":
+			severity = color.GreenString("Low")
+		}
+		
+		fmt.Fprintf(w, "  %s\t%s\t%.1f\t%s\n",
+			color.CyanString(cve.ID),
+			severity,
+			cve.Score,
+			cve.Description,
+		)
+	}
+	w.Flush()
 }
 
 func init() {
