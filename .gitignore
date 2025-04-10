@@ -25,3 +25,4 @@ env
 token.json
 
 node_modules/
+package.json

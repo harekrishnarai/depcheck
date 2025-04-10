@@ -1,10 +1,11 @@
 package version
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
+	"net/url"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -18,26 +19,73 @@ type CVEDetails struct {
 	Score       float64   // CVSS score
 	Published   time.Time // When the CVE was published
 	FixedIn     string    // Version where this CVE was fixed
+	URL         string    // URL to the advisory
+	Details     string    // Detailed description of the vulnerability
+	Aliases     []string  // Alternative IDs (e.g., GHSA IDs)
+	Source      string    // Source of the vulnerability info (deps.dev or osv.dev)
 }
 
-// CVEInfo holds CVE information for a package version range
+// CVEInfo holds information about CVEs affecting a package
 type CVEInfo struct {
 	Current []CVEDetails // CVEs affecting the current version
-	Fixed   []CVEDetails // CVEs that would be fixed by upgrading
-	New     []CVEDetails // New CVEs introduced in versions between current and latest
+	Fixed   []CVEDetails // CVEs fixed in newer versions
+	New     []CVEDetails // New CVEs in the latest version
 }
 
-// OSVResponse represents the response from OSV API
+// DepsDevResponse represents the response from deps.dev API
+type DepsDevResponse struct {
+	Version struct {
+		VersionKey struct {
+			System  string `json:"system"`
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"versionKey"`
+		IsDefault bool `json:"isDefault"`
+		Licenses  []struct {
+			Name string `json:"name"`
+			URL  string `json:"url"`
+		} `json:"licenses"`
+		Links []struct {
+			Label string `json:"label"`
+			URL   string `json:"url"`
+		} `json:"links"`
+		Advisories []struct {
+			Advisory struct {
+				ID      string `json:"id"`
+				URL     string `json:"url"`
+				Summary string `json:"summary"`
+				Aliases []string `json:"aliases"`
+				FixedIn string `json:"fixedIn"`
+				CVSS    struct {
+					Score  float64 `json:"score"`
+					Vector string  `json:"vector"`
+				} `json:"cvss"`
+			} `json:"advisory"`
+		} `json:"advisories"`
+	} `json:"version"`
+}
+
+// OSVQuery represents a query to the OSV.dev API
+type OSVQuery struct {
+	Package struct {
+		Name      string `json:"name"`
+		Ecosystem string `json:"ecosystem"`
+	} `json:"package"`
+	Version string `json:"version"`
+}
+
+// OSVResponse represents the response from OSV.dev API
 type OSVResponse struct {
 	Vulns []struct {
-		ID        string    `json:"id"`
-		Details   string    `json:"details"`
+		ID        string `json:"id"`
+		Summary   string `json:"summary"`
+		Details   string `json:"details"`
+		Modified  string `json:"modified"`
+		Published string `json:"published"`
 		Severity  []struct {
 			Type  string      `json:"type"`
 			Score interface{} `json:"score"` // Can be string or float64
 		} `json:"severity"`
-		Modified  time.Time `json:"modified"`
-		Published time.Time `json:"published"`
 		Affected []struct {
 			Package struct {
 				Name      string `json:"name"`
@@ -51,100 +99,254 @@ type OSVResponse struct {
 				} `json:"events"`
 			} `json:"ranges"`
 			DatabaseSpecific struct {
-				Severity string `json:"severity"`
+				URL string `json:"url"`
 			} `json:"database_specific"`
 		} `json:"affected"`
+		References []struct {
+			Type string `json:"type"`
+			URL  string `json:"url"`
+		} `json:"references"`
 	} `json:"vulns"`
 }
 
-// fetchCVEs fetches CVE information for a given package and version range
-func fetchCVEs(pkgName string, currentVersion, latestVersion string) (*CVEInfo, error) {
-	url := fmt.Sprintf("https://api.osv.dev/v1/query")
-
-	query := map[string]interface{}{
-		"package": map[string]string{
-			"name":      pkgName,
-			"ecosystem": "npm",
-		},
+// fetchCVEs fetches CVE information from both deps.dev and OSV.dev
+func fetchCVEs(packageName, currentVersion, latestVersion string) (*CVEInfo, error) {
+	info := &CVEInfo{
+		Current: make([]CVEDetails, 0),
+		Fixed:   make([]CVEDetails, 0),
+		New:     make([]CVEDetails, 0),
 	}
 
-	jsonData, err := json.Marshal(query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal query: %v", err)
+	// First, check deps.dev
+	fmt.Printf("🔍 Checking deps.dev for %s@%s...\n", packageName, currentVersion)
+	if err := fetchDepsDevVulns(packageName, currentVersion, latestVersion, info); err != nil {
+		fmt.Printf("⚠️  Warning: deps.dev check failed: %v\n", err)
 	}
 
-	resp, err := http.Post(url, "application/json", strings.NewReader(string(jsonData)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch CVE data: %v", err)
-	}
-	defer resp.Body.Close()
-
-	var result OSVResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode CVE data: %v", err)
-	}
-
-	info := &CVEInfo{}
-	
-	// Process each vulnerability
-	for _, vuln := range result.Vulns {
-		severity := "Unknown"
-		score := 0.0
-
-		// Try to get severity from database_specific first
-		if len(vuln.Affected) > 0 {
-			severity = vuln.Affected[0].DatabaseSpecific.Severity
-		}
-
-		// If no severity found, try to determine from score
-		if severity == "" && len(vuln.Severity) > 0 {
-			// Handle both string and float64 score types
-			switch s := vuln.Severity[0].Score.(type) {
-			case float64:
-				score = s
-			case string:
-				// Try to parse the string as float
-				fmt.Sscanf(s, "%f", &score)
-			}
-
-			switch {
-			case score >= 9.0:
-				severity = "Critical"
-			case score >= 7.0:
-				severity = "High"
-			case score >= 4.0:
-				severity = "Medium"
-			default:
-				severity = "Low"
-			}
-		}
-
-		details := CVEDetails{
-			ID:          vuln.ID,
-			Description: vuln.Details,
-			Severity:    severity,
-			Score:       score,
-			Published:   vuln.Published,
-		}
-
-		// Determine if this CVE affects the current version and/or is fixed in a later version
-		for _, affected := range vuln.Affected {
-			for _, r := range affected.Ranges {
-				for _, event := range r.Events {
-					if event.Fixed != "" {
-						details.FixedIn = event.Fixed
-						if isVersionInRange(currentVersion, event.Introduced, event.Fixed) {
-							info.Current = append(info.Current, details)
-						} else if isVersionInRange(latestVersion, event.Introduced, event.Fixed) {
-							info.New = append(info.New, details)
-						}
-					}
-				}
-			}
-		}
+	// Then check OSV.dev
+	fmt.Printf("🔍 Checking OSV.dev for %s@%s...\n", packageName, currentVersion)
+	if err := fetchOSVVulns(packageName, currentVersion, latestVersion, info); err != nil {
+		fmt.Printf("⚠️  Warning: OSV.dev check failed: %v\n", err)
 	}
 
 	return info, nil
+}
+
+func fetchDepsDevVulns(packageName, currentVersion, latestVersion string, info *CVEInfo) error {
+	// Get current version info
+	versionURL := fmt.Sprintf("https://api.deps.dev/v3/systems/npm/packages/%s/versions/%s", 
+		url.PathEscape(packageName), url.PathEscape(currentVersion))
+	
+	versionResp, err := http.Get(versionURL)
+	if err != nil {
+		return fmt.Errorf("failed to fetch version info: %v", err)
+	}
+	defer versionResp.Body.Close()
+
+	if versionResp.StatusCode == http.StatusNotFound {
+		return nil // Version not found, skip
+	}
+
+	var versionData DepsDevResponse
+	if err := json.NewDecoder(versionResp.Body).Decode(&versionData); err != nil {
+		return fmt.Errorf("failed to decode version response: %v", err)
+	}
+
+	// Process advisories for current version
+	for _, advisory := range versionData.Version.Advisories {
+		details := CVEDetails{
+			ID:          advisory.Advisory.ID,
+			Description: advisory.Advisory.Summary,
+			FixedIn:     advisory.Advisory.FixedIn,
+			URL:         advisory.Advisory.URL,
+			Score:       advisory.Advisory.CVSS.Score,
+			Aliases:     advisory.Advisory.Aliases,
+			Source:      "deps.dev",
+		}
+
+		// Determine severity based on CVSS score
+		switch {
+		case details.Score >= 9.0:
+			details.Severity = "Critical"
+		case details.Score >= 7.0:
+			details.Severity = "High"
+		case details.Score >= 4.0:
+			details.Severity = "Medium"
+		default:
+			details.Severity = "Low"
+		}
+
+		// Check if this vulnerability affects the current version
+		currentVer, err := semver.NewVersion(currentVersion)
+		if err != nil {
+			continue
+		}
+
+		if advisory.Advisory.FixedIn != "" {
+			fixedVer, err := semver.NewVersion(advisory.Advisory.FixedIn)
+			if err != nil {
+				continue
+			}
+
+			if currentVer.LessThan(fixedVer) {
+				info.Current = append(info.Current, details)
+			} else {
+				info.Fixed = append(info.Fixed, details)
+			}
+		} else {
+			info.Current = append(info.Current, details)
+		}
+	}
+
+	return nil
+}
+
+func fetchOSVVulns(packageName, currentVersion, latestVersion string, info *CVEInfo) error {
+	// Prepare OSV.dev query
+	query := OSVQuery{}
+	query.Package.Name = packageName
+	query.Package.Ecosystem = "npm"
+	query.Version = currentVersion
+
+	queryJSON, err := json.Marshal(query)
+	if err != nil {
+		return fmt.Errorf("failed to marshal OSV query: %v", err)
+	}
+
+	// Query OSV.dev API
+	resp, err := http.Post("https://api.osv.dev/v1/query", "application/json", bytes.NewBuffer(queryJSON))
+	if err != nil {
+		return fmt.Errorf("failed to query OSV.dev: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var osvResp OSVResponse
+	if err := json.NewDecoder(resp.Body).Decode(&osvResp); err != nil {
+		return fmt.Errorf("failed to decode OSV response: %v", err)
+	}
+
+	// Process vulnerabilities
+	for _, vuln := range osvResp.Vulns {
+		details := CVEDetails{
+			ID:          vuln.ID,
+			Description: vuln.Summary,
+			Details:     vuln.Details,
+			Source:      "osv.dev",
+		}
+
+		// Get severity
+		if len(vuln.Severity) > 0 {
+			// Handle both string and float64 severity scores
+			switch score := vuln.Severity[0].Score.(type) {
+			case float64:
+				details.Score = score
+			case string:
+				// Try to parse string score
+				if parsed, err := parseScore(score); err == nil {
+					details.Score = parsed
+				}
+			}
+
+			// Determine severity based on score
+			switch {
+			case details.Score >= 9.0:
+				details.Severity = "Critical"
+			case details.Score >= 7.0:
+				details.Severity = "High"
+			case details.Score >= 4.0:
+				details.Severity = "Medium"
+			default:
+				details.Severity = "Low"
+			}
+		}
+
+		// Get fixed version from ranges
+		if len(vuln.Affected) > 0 && len(vuln.Affected[0].Ranges) > 0 {
+			for _, r := range vuln.Affected[0].Ranges[0].Events {
+				if r.Fixed != "" {
+					details.FixedIn = r.Fixed
+					break
+				}
+			}
+		}
+
+		// Get URL from references
+		for _, ref := range vuln.References {
+			if ref.Type == "ADVISORY" {
+				details.URL = ref.URL
+				break
+			}
+		}
+
+		// Parse published date
+		if vuln.Published != "" {
+			if published, err := time.Parse(time.RFC3339, vuln.Published); err == nil {
+				details.Published = published
+			}
+		}
+
+		// Check if this vulnerability affects the current version
+		currentVer, err := semver.NewVersion(currentVersion)
+		if err != nil {
+			continue
+		}
+
+		if details.FixedIn != "" {
+			fixedVer, err := semver.NewVersion(details.FixedIn)
+			if err != nil {
+				continue
+			}
+
+			if currentVer.LessThan(fixedVer) {
+				// Check if we already have this vulnerability from deps.dev
+				isDuplicate := false
+				for _, existing := range info.Current {
+					if existing.ID == details.ID || containsID(existing.Aliases, details.ID) {
+						isDuplicate = true
+						break
+					}
+				}
+				if !isDuplicate {
+					info.Current = append(info.Current, details)
+				}
+			} else {
+				isDuplicate := false
+				for _, existing := range info.Fixed {
+					if existing.ID == details.ID || containsID(existing.Aliases, details.ID) {
+						isDuplicate = true
+						break
+					}
+				}
+				if !isDuplicate {
+					info.Fixed = append(info.Fixed, details)
+				}
+			}
+		} else {
+			// If no fixed version, check if we already have this vulnerability
+			isDuplicate := false
+			for _, existing := range info.Current {
+				if existing.ID == details.ID || containsID(existing.Aliases, details.ID) {
+					isDuplicate = true
+					break
+				}
+			}
+			if !isDuplicate {
+				info.Current = append(info.Current, details)
+			}
+		}
+	}
+
+	return nil
+}
+
+// containsID checks if a list of IDs contains a specific ID
+func containsID(ids []string, target string) bool {
+	for _, id := range ids {
+		if id == target {
+			return true
+		}
+	}
+	return false
 }
 
 // isVersionInRange checks if a version is within a given range
@@ -176,4 +378,20 @@ func isVersionInRange(version, introduced, fixed string) bool {
 
 	// Check if version is in range [introduced, fixed)
 	return ver.Compare(intro) >= 0 && ver.Compare(fix) < 0
+}
+
+// parseScore attempts to parse a severity score from a string
+func parseScore(score string) (float64, error) {
+	switch score {
+	case "CRITICAL":
+		return 9.0, nil
+	case "HIGH":
+		return 7.0, nil
+	case "MEDIUM":
+		return 4.0, nil
+	case "LOW":
+		return 1.0, nil
+	default:
+		return 0.0, fmt.Errorf("unknown severity: %s", score)
+	}
 } 
