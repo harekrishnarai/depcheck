@@ -10,6 +10,7 @@ import (
 	"github.com/Masterminds/semver/v3"
 )
 
+// PackageInfo contains basic information about a package
 type PackageInfo struct {
 	Name    string
 	Current string
@@ -17,13 +18,15 @@ type PackageInfo struct {
 	Patched string
 }
 
+// VersionAnalysis contains the analysis results for a package version
 type VersionAnalysis struct {
 	PackageInfo
-	HasBreakingChanges bool
+	HasBreakingChanges   bool
 	SecurityImplications string
-	Recommendation      string
+	Recommendation       string
 }
 
+// NpmPackage represents the structure of an npm package from the registry
 type NpmPackage struct {
 	Versions map[string]struct {
 		Deprecated string `json:"deprecated"`
@@ -33,6 +36,7 @@ type NpmPackage struct {
 	} `json:"dist-tags"`
 }
 
+// AnalyzePackage checks if a specific package version exists and analyzes its status
 func AnalyzePackage(name, version string) (*VersionAnalysis, error) {
 	// Fetch package information from npm registry
 	resp, err := http.Get(fmt.Sprintf("https://registry.npmjs.org/%s", name))
@@ -94,6 +98,7 @@ func AnalyzePackage(name, version string) (*VersionAnalysis, error) {
 	return analysis, nil
 }
 
+// AnalyzePackageFile analyzes all dependencies in a package.json file
 func AnalyzePackageFile(reader io.Reader) ([]VersionAnalysis, error) {
 	var pkgJson struct {
 		Dependencies    map[string]string `json:"dependencies"`

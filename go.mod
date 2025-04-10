@@ -1,4 +1,4 @@
-module github.com/harekrishnarai/depcheck
+module depcheck
 
 go 1.21
 

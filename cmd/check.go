@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/harekrishnarai/depcheck/pkg/version"
+	"depcheck/pkg/version"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 )
@@ -24,9 +24,9 @@ Example: depcheck check express@4.18.2`,
 		}
 
 		pkgName := parts[0]
-		version := parts[1]
+		pkgVersion := parts[1]
 
-		analysis, err := version.AnalyzePackage(pkgName, version)
+		analysis, err := version.AnalyzePackage(pkgName, pkgVersion)
 		if err != nil {
 			return fmt.Errorf("failed to analyze package: %v", err)
 		}

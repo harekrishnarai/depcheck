@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/harekrishnarai/depcheck/cmd"
+	"depcheck/cmd"
 )
 
 func main() {
@@ -12,4 +12,4 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-} 
+}
