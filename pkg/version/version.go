@@ -3,7 +3,9 @@ package version
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/Masterminds/semver/v3"
 )
@@ -94,4 +96,29 @@ func AnalyzePackage(pkgName, pkgVersion string) (*PackageAnalysis, error) {
 		SecurityImplications: securityImplications,
 		Recommendation:     recommendation,
 	}, nil
+}
+
+// AnalyzePackageFile analyzes all dependencies in a package.json file
+func AnalyzePackageFile(reader io.Reader) ([]PackageAnalysis, error) {
+	var pkgJson struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+
+	if err := json.NewDecoder(reader).Decode(&pkgJson); err != nil {
+		return nil, fmt.Errorf("failed to parse package.json: %v", err)
+	}
+
+	var analyses []PackageAnalysis
+	for name, version := range pkgJson.Dependencies {
+		// Remove ^ or ~ from version string
+		cleanVersion := strings.TrimLeft(version, "^~")
+		analysis, err := AnalyzePackage(name, cleanVersion)
+		if err != nil {
+			return nil, fmt.Errorf("failed to analyze package %s: %v", name, err)
+		}
+		analyses = append(analyses, *analysis)
+	}
+
+	return analyses, nil
 } 

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"depcheck/pkg/version"
+	"github.com/harekrishnarai/depcheck/pkg/version"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 )
