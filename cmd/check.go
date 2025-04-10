@@ -34,8 +34,16 @@ Example: depcheck check express@4.18.2`,
 		// Create and display the table
 		table := tablewriter.NewWriter(os.Stdout)
 		table.SetHeader([]string{"Package", "Current", "Latest", "Patched", "Breaking Changes", "Security Implications", "Recommendation"})
-		table.SetRowLine(true)
-		table.SetAutoWrapText(false)
+		
+		// Improve table formatting
+		table.SetAutoWrapText(true)
+		table.SetRowLine(false)
+		table.SetColumnSeparator("|")
+		table.SetCenterSeparator("+")
+		table.SetRowSeparator("-")
+		table.SetAlignment(tablewriter.ALIGN_LEFT)
+		table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
+		table.SetBorder(true)
 
 		breakingChanges := "No"
 		if analysis.HasBreakingChanges {

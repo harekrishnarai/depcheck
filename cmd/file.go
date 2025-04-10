@@ -34,9 +34,17 @@ The tool will automatically detect the file type and check all dependencies.`,
 		// Create and display the table
 		table := tablewriter.NewWriter(os.Stdout)
 		table.SetHeader([]string{"Package", "Current", "Latest", "Patched", "Breaking Changes", "Security Implications", "Recommendation"})
-		table.SetRowLine(true)
-		table.SetAutoWrapText(false)
-		table.SetColWidth(50)
+		
+		// Improve table formatting
+		table.SetAutoWrapText(true)
+		table.SetRowLine(false)
+		table.SetColumnSeparator("|")
+		table.SetCenterSeparator("+")
+		table.SetRowSeparator("-")
+		table.SetAlignment(tablewriter.ALIGN_LEFT)
+		table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
+		table.SetBorder(true)
+		table.SetColWidth(40) // Reduced from 50 to make it more compact
 
 		for _, analysis := range analyses {
 			breakingChanges := "No"
