@@ -8,6 +8,7 @@ import (
 	"github.com/harekrishnarai/depcheck/pkg/version"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
+	"github.com/fatih/color"
 )
 
 var checkCmd = &cobra.Command{
@@ -33,30 +34,51 @@ Example: depcheck check express@4.18.2`,
 
 		// Create and display the table
 		table := tablewriter.NewWriter(os.Stdout)
-		table.SetHeader([]string{"Package", "Current", "Latest", "Patched", "Breaking Changes", "Security Implications", "Recommendation"})
+		headers := []string{"Package", "Current", "Latest", "Patched", "Breaking Changes", "Security", "Recommendation"}
+		colors := []tablewriter.Colors{
+			{tablewriter.FgHiCyanColor},    // Package
+			{tablewriter.FgYellowColor},    // Current
+			{tablewriter.FgGreenColor},     // Latest
+			{tablewriter.FgHiYellowColor},  // Patched
+			{tablewriter.FgRedColor},       // Breaking Changes
+			{tablewriter.FgMagentaColor},   // Security
+			{tablewriter.FgHiWhiteColor},   // Recommendation
+		}
+		
+		table.SetHeader(headers)
+		table.SetHeaderColor(colors...)
 		
 		// Improve table formatting
 		table.SetAutoWrapText(true)
 		table.SetRowLine(false)
-		table.SetColumnSeparator("|")
-		table.SetCenterSeparator("+")
-		table.SetRowSeparator("-")
+		table.SetColumnSeparator("│")
+		table.SetCenterSeparator("─")
+		table.SetRowSeparator("─")
 		table.SetAlignment(tablewriter.ALIGN_LEFT)
 		table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
 		table.SetBorder(true)
 
-		breakingChanges := "No"
+		breakingChanges := color.GreenString("No")
 		if analysis.HasBreakingChanges {
-			breakingChanges = "Yes"
+			breakingChanges = color.RedString("Yes")
+		}
+
+		securityStatus := "None"
+		if analysis.HasBreakingChanges {
+			securityStatus = color.RedString("High")
+		} else if analysis.Latest != analysis.Current {
+			securityStatus = color.YellowString("Medium")
+		} else {
+			securityStatus = color.GreenString("None")
 		}
 
 		table.Append([]string{
-			analysis.Name,
-			analysis.Current,
-			analysis.Latest,
-			analysis.Patched,
+			color.CyanString(analysis.Name),
+			color.YellowString(analysis.Current),
+			color.GreenString(analysis.Latest),
+			color.HiYellowString(analysis.Patched),
 			breakingChanges,
-			analysis.SecurityImplications,
+			securityStatus,
 			analysis.Recommendation,
 		})
 
