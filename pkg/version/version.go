@@ -1,8 +1,9 @@
 package version
 
 import (
+	"encoding/json"
 	"fmt"
-	"strings"
+	"net/http"
 
 	"github.com/Masterminds/semver/v3"
 )
@@ -18,28 +19,69 @@ type PackageAnalysis struct {
 	Recommendation     string
 }
 
+// NpmPackage represents the structure of an npm package from the registry
+type NpmPackage struct {
+	Versions map[string]struct {
+		Deprecated string `json:"deprecated"`
+	} `json:"versions"`
+	DistTags struct {
+		Latest string `json:"latest"`
+	} `json:"dist-tags"`
+}
+
 // AnalyzePackage checks a package version and returns analysis results
 func AnalyzePackage(pkgName, pkgVersion string) (*PackageAnalysis, error) {
-	// For now, we'll return a mock analysis
-	// In a real implementation, this would fetch actual package data
-	// from npm registry or other sources
+	// Fetch package information from npm registry
+	resp, err := http.Get(fmt.Sprintf("https://registry.npmjs.org/%s", pkgName))
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch package info: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var pkg NpmPackage
+	if err := json.NewDecoder(resp.Body).Decode(&pkg); err != nil {
+		return nil, fmt.Errorf("failed to decode package info: %v", err)
+	}
+
 	current, err := semver.NewVersion(pkgVersion)
 	if err != nil {
 		return nil, fmt.Errorf("invalid version format: %v", err)
 	}
 
-	// Mock data - in real implementation, this would come from package registry
-	latest := "4.18.2"
-	patched := "4.18.2"
-	hasBreakingChanges := false
+	latest := pkg.DistTags.Latest
+	latestVer, err := semver.NewVersion(latest)
+	if err != nil {
+		return nil, fmt.Errorf("invalid latest version format: %v", err)
+	}
+
+	// Find the latest patched version in the current major version
+	patched := pkgVersion
+	for v := range pkg.Versions {
+		ver, err := semver.NewVersion(v)
+		if err != nil {
+			continue
+		}
+		if ver.Major() == current.Major() && ver.GreaterThan(current) {
+			if patched == pkgVersion || ver.GreaterThan(semver.MustParse(patched)) {
+				patched = v
+			}
+		}
+	}
+
+	hasBreakingChanges := latestVer.Major() > current.Major()
 	securityImplications := "No known security issues"
 	recommendation := "Version is up to date"
 
-	// Compare versions
-	latestVer, err := semver.NewVersion(latest)
-	if err == nil {
-		if current.LessThan(latestVer) {
-			recommendation = fmt.Sprintf("Consider upgrading to %s", latest)
+	if latestVer.GreaterThan(current) {
+		if hasBreakingChanges {
+			securityImplications = "Major version upgrade may include breaking changes and security improvements"
+			recommendation = "Review changelog and test thoroughly before upgrading"
+		} else if latestVer.Minor() > current.Minor() {
+			securityImplications = "Minor version upgrade may include new features and security patches"
+			recommendation = "Consider upgrading after testing"
+		} else if latestVer.Patch() > current.Patch() {
+			securityImplications = "Patch version upgrade likely includes security fixes"
+			recommendation = "Recommended to upgrade"
 		}
 	}
 
