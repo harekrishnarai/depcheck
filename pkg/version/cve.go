@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/Masterminds/semver/v3"
 )
 
 // CVEDetails represents information about a specific CVE
@@ -25,15 +27,43 @@ type CVEInfo struct {
 	New     []CVEDetails // New CVEs introduced in versions between current and latest
 }
 
+// OSVResponse represents the response from OSV API
+type OSVResponse struct {
+	Vulns []struct {
+		ID        string    `json:"id"`
+		Details   string    `json:"details"`
+		Severity  []struct {
+			Type  string      `json:"type"`
+			Score interface{} `json:"score"` // Can be string or float64
+		} `json:"severity"`
+		Modified  time.Time `json:"modified"`
+		Published time.Time `json:"published"`
+		Affected []struct {
+			Package struct {
+				Name      string `json:"name"`
+				Ecosystem string `json:"ecosystem"`
+			} `json:"package"`
+			Ranges []struct {
+				Type   string `json:"type"`
+				Events []struct {
+					Introduced string `json:"introduced,omitempty"`
+					Fixed      string `json:"fixed,omitempty"`
+				} `json:"events"`
+			} `json:"ranges"`
+			DatabaseSpecific struct {
+				Severity string `json:"severity"`
+			} `json:"database_specific"`
+		} `json:"affected"`
+	} `json:"vulns"`
+}
+
 // fetchCVEs fetches CVE information for a given package and version range
 func fetchCVEs(pkgName string, currentVersion, latestVersion string) (*CVEInfo, error) {
-	// For now, we'll use the OSV database API (https://osv.dev/docs/)
-	// In a production environment, you might want to use multiple sources
 	url := fmt.Sprintf("https://api.osv.dev/v1/query")
 
 	query := map[string]interface{}{
 		"package": map[string]string{
-			"name":    pkgName,
+			"name":      pkgName,
 			"ecosystem": "npm",
 		},
 	}
@@ -49,27 +79,7 @@ func fetchCVEs(pkgName string, currentVersion, latestVersion string) (*CVEInfo, 
 	}
 	defer resp.Body.Close()
 
-	var result struct {
-		Vulns []struct {
-			ID string `json:"id"`
-			Details string `json:"details"`
-			Severity []struct {
-				Type  string  `json:"type"`
-				Score float64 `json:"score"`
-			} `json:"severity"`
-			Published time.Time `json:"published"`
-			Affected []struct {
-				Ranges []struct {
-					Type   string `json:"type"`
-					Events []struct {
-						Introduced string `json:"introduced,omitempty"`
-						Fixed      string `json:"fixed,omitempty"`
-					} `json:"events"`
-				} `json:"ranges"`
-			} `json:"affected"`
-		} `json:"vulns"`
-	}
-
+	var result OSVResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode CVE data: %v", err)
 	}
@@ -80,9 +90,23 @@ func fetchCVEs(pkgName string, currentVersion, latestVersion string) (*CVEInfo, 
 	for _, vuln := range result.Vulns {
 		severity := "Unknown"
 		score := 0.0
-		
-		if len(vuln.Severity) > 0 {
-			score = vuln.Severity[0].Score
+
+		// Try to get severity from database_specific first
+		if len(vuln.Affected) > 0 {
+			severity = vuln.Affected[0].DatabaseSpecific.Severity
+		}
+
+		// If no severity found, try to determine from score
+		if severity == "" && len(vuln.Severity) > 0 {
+			// Handle both string and float64 score types
+			switch s := vuln.Severity[0].Score.(type) {
+			case float64:
+				score = s
+			case string:
+				// Try to parse the string as float
+				fmt.Sscanf(s, "%f", &score)
+			}
+
 			switch {
 			case score >= 9.0:
 				severity = "Critical"
@@ -125,6 +149,31 @@ func fetchCVEs(pkgName string, currentVersion, latestVersion string) (*CVEInfo, 
 
 // isVersionInRange checks if a version is within a given range
 func isVersionInRange(version, introduced, fixed string) bool {
-	// This is a simplified version. In production, you'd want to use proper semver comparison
-	return version >= introduced && (fixed == "" || version < fixed)
+	if introduced == "" {
+		introduced = "0.0.0"
+	}
+	
+	// Parse versions using semver
+	ver, err := semver.NewVersion(version)
+	if err != nil {
+		return false
+	}
+
+	intro, err := semver.NewVersion(introduced)
+	if err != nil {
+		return false
+	}
+
+	// If no fixed version, only check if current version is >= introduced
+	if fixed == "" {
+		return ver.Compare(intro) >= 0
+	}
+
+	fix, err := semver.NewVersion(fixed)
+	if err != nil {
+		return false
+	}
+
+	// Check if version is in range [introduced, fixed)
+	return ver.Compare(intro) >= 0 && ver.Compare(fix) < 0
 } 
