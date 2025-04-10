@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/harekrishnarai/depcheck/pkg/version"
 	"github.com/olekukonko/tablewriter"
@@ -33,7 +32,7 @@ Example: depcheck check express@4.18.2`,
 			return fmt.Errorf("failed to analyze package: %v", err)
 		}
 
-		// Create and display the table
+		// Create and display the main table
 		table := tablewriter.NewWriter(os.Stdout)
 		headers := []string{"Package", "Current", "Latest", "Patched", "Breaking Changes", "Security", "Recommendation"}
 		colors := []tablewriter.Colors{
@@ -65,11 +64,11 @@ Example: depcheck check express@4.18.2`,
 		}
 
 		securityStatus := color.GreenString("None")
+		vulnCount := 0
 		if analysis.CVEInfo != nil {
-			if len(analysis.CVEInfo.Current) > 0 {
-				securityStatus = color.RedString(analysis.SecurityImplications)
-			} else if len(analysis.CVEInfo.New) > 0 {
-				securityStatus = color.YellowString("New CVEs in target version")
+			vulnCount = len(analysis.CVEInfo.Current)
+			if vulnCount > 0 {
+				securityStatus = color.RedString(fmt.Sprintf("%d active CVEs", vulnCount))
 			}
 		}
 
@@ -85,54 +84,61 @@ Example: depcheck check express@4.18.2`,
 
 		table.Render()
 
-		// Display CVE details if available
-		if analysis.CVEInfo != nil {
+		// Display CVE summary if vulnerabilities exist
+		if vulnCount > 0 {
 			fmt.Println()
-			if len(analysis.CVEInfo.Current) > 0 {
-				color.Red("Current Version CVEs:")
-				displayCVEDetails(analysis.CVEInfo.Current)
-			}
-
-			if len(analysis.CVEInfo.Fixed) > 0 {
-				fmt.Println()
-				color.Green("CVEs Fixed in Patch Version:")
-				displayCVEDetails(analysis.CVEInfo.Fixed)
-			}
-
-			if len(analysis.CVEInfo.New) > 0 {
-				fmt.Println()
-				color.Yellow("New CVEs in Target Version:")
-				displayCVEDetails(analysis.CVEInfo.New)
-			}
+			displayVulnerabilitySummary(analysis.CVEInfo)
 		}
 
 		return nil
 	},
 }
 
-func displayCVEDetails(cves []version.CVEDetails) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	for _, cve := range cves {
-		severity := cve.Severity
-		switch severity {
-		case "Critical":
-			severity = color.RedString("Critical")
-		case "High":
-			severity = color.HiRedString("High")
-		case "Medium":
-			severity = color.YellowString("Medium")
-		case "Low":
-			severity = color.GreenString("Low")
+func displayVulnerabilitySummary(info *version.CVEInfo) {
+	if len(info.Current) > 0 {
+		// Create vulnerability table
+		table := tablewriter.NewWriter(os.Stdout)
+		table.SetHeader([]string{"Advisory", "Severity", "Fixed In", "Links"})
+		table.SetColumnSeparator("│")
+		table.SetCenterSeparator("─")
+		table.SetRowSeparator("─")
+		table.SetAlignment(tablewriter.ALIGN_LEFT)
+		table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
+		table.SetBorder(true)
+		table.SetAutoWrapText(false)
+
+		for _, cve := range info.Current {
+			severity := cve.Severity
+			switch severity {
+			case "Critical":
+				severity = color.RedString("Critical")
+			case "High":
+				severity = color.HiRedString("High")
+			case "Medium":
+				severity = color.YellowString("Medium")
+			case "Low":
+				severity = color.GreenString("Low")
+			}
+
+			// Generate links
+			var links string
+			if strings.HasPrefix(cve.ID, "CVE-") {
+				links = fmt.Sprintf("https://nvd.nist.gov/vuln/detail/%s", cve.ID)
+			} else if strings.HasPrefix(cve.ID, "GHSA-") {
+				links = fmt.Sprintf("https://github.com/advisories/%s", cve.ID)
+			}
+
+			table.Append([]string{
+				color.CyanString(cve.ID),
+				severity,
+				color.YellowString(cve.FixedIn),
+				color.BlueString(links),
+			})
 		}
-		
-		fmt.Fprintf(w, "  %s\t%s\t%.1f\t%s\n",
-			color.CyanString(cve.ID),
-			severity,
-			cve.Score,
-			cve.Description,
-		)
+
+		color.Red("Active Vulnerabilities:")
+		table.Render()
 	}
-	w.Flush()
 }
 
 func init() {
