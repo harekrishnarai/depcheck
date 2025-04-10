@@ -2,6 +2,10 @@
 
 A CLI tool to check dependency versions across different package ecosystems.
 
+![DepCheck](demo/depcheck.gif)
+
+
+
 ## Installation
 
 ```bash
