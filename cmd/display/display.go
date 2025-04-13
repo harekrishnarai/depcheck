@@ -20,6 +20,8 @@ func DisplayVulnerabilities(vulns []version.CVEDetails) {
 			severity = color.HiRedString("%s (%.1f)", vuln.Severity, vuln.Score)
 		case "Medium":
 			severity = color.YellowString("%s (%.1f)", vuln.Severity, vuln.Score)
+		case "Moderate":
+			severity = color.YellowString("%s (%.1f)", vuln.Severity, vuln.Score)
 		case "Low":
 			severity = color.GreenString("%s (%.1f)", vuln.Severity, vuln.Score)
 		}
@@ -51,4 +53,4 @@ func DisplayVulnerabilities(vulns []version.CVEDetails) {
 		}
 		fmt.Println()
 	}
-} 
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -14,11 +15,13 @@ import (
 // PackageAnalysis represents the analysis result for a single package
 type PackageAnalysis struct {
 	Name              string    // Package name
-	Current          string    // Current version
-	Latest           string    // Latest version available
-	Patched          string    // Latest patched version in current major
-	HasBreakingChanges bool    // Whether upgrading would introduce breaking changes
-	CVEs             *CVEInfo  // Vulnerability information
+	Current           string    // Current version
+	Latest            string    // Latest version available
+	Patched           string    // Latest patched version in current major
+	HasBreakingChanges bool     // Whether upgrading would introduce breaking changes
+	CVEs              *CVEInfo  // Vulnerability information
+	DependencyPath    string    // Path of dependency in the dependency tree
+	IsTransitive      bool      // Whether this is a transitive dependency
 }
 
 // NpmPackage represents the structure of an npm package from the registry
@@ -29,6 +32,26 @@ type NpmPackage struct {
 	DistTags struct {
 		Latest string `json:"latest"`
 	} `json:"dist-tags"`
+}
+
+// NpmPackageLock represents the structure of a package-lock.json file
+type NpmPackageLock struct {
+	Dependencies map[string]struct {
+		Version      string                 `json:"version"`
+		Resolved     string                 `json:"resolved,omitempty"`
+		Requires     map[string]string      `json:"requires,omitempty"`
+		Dependencies interface{}            `json:"dependencies,omitempty"`
+	} `json:"dependencies"`
+	Packages map[string]struct {
+		Version  string `json:"version"`
+		Resolved string `json:"resolved,omitempty"`
+	} `json:"packages,omitempty"` // For newer package-lock format (npm 7+)
+}
+
+// YarnLockEntry represents an entry in a yarn.lock file
+type YarnLockEntry struct {
+	Version string
+	Dependencies map[string]string
 }
 
 // AnalyzePackage checks a package version and returns analysis results
@@ -123,6 +146,341 @@ func AnalyzePackageFile(file io.Reader) ([]PackageAnalysis, error) {
 	}
 
 	return analyses, nil
+}
+
+// AnalyzeNpmLockFile analyzes package-lock.json or npm-shrinkwrap.json and returns version information
+func AnalyzeNpmLockFile(file io.Reader) ([]PackageAnalysis, error) {
+	var lockFile NpmPackageLock
+
+	if err := json.NewDecoder(file).Decode(&lockFile); err != nil {
+		return nil, fmt.Errorf("failed to parse npm lock file: %v", err)
+	}
+
+	var analyses []PackageAnalysis
+	processed := make(map[string]bool) // Track already processed packages to avoid duplicates
+
+	// First check newer format (npm 7+)
+	if len(lockFile.Packages) > 0 {
+		fmt.Printf("📦 Analyzing lockfile (including transitive dependencies)...\n")
+		
+		// First, identify direct dependencies to build the dependency tree
+		directDeps := make(map[string]bool)
+		for pkgPath := range lockFile.Packages {
+			// Direct dependencies are typically at node_modules/package or node_modules/@scope/package
+			parts := strings.Split(pkgPath, "/")
+			if len(parts) < 2 || parts[0] != "node_modules" {
+				continue
+			}
+			
+			// Regular package as direct dependency
+			if len(parts) == 2 && !strings.HasPrefix(parts[1], "@") {
+				directDeps[parts[1]] = true
+			// Scoped package as direct dependency
+			} else if len(parts) == 3 && strings.HasPrefix(parts[1], "@") {
+				directDeps[parts[1]+"/"+parts[2]] = true
+			}
+		}
+		
+		// Now process all packages, marking them as direct or transitive
+		for pkgPath, pkg := range lockFile.Packages {
+			// Skip the root package
+			if pkgPath == "" || pkgPath == "." {
+				continue
+			}
+			
+			// Skip node_modules prefix in path if it exists
+			if strings.HasPrefix(pkgPath, "node_modules/") {
+				pkgPath = strings.TrimPrefix(pkgPath, "node_modules/")
+			}
+			
+			// Parse package name
+			parts := strings.Split(pkgPath, "/")
+			if len(parts) == 0 {
+				continue
+			}
+			
+			var pkgName string
+			var isTransitive bool
+			var depPath string
+			
+			// Handle different package path formats
+			if len(parts) == 1 {
+				// Direct dependency without node_modules prefix
+				pkgName = parts[0]
+				isTransitive = false
+			} else if len(parts) == 2 && strings.HasPrefix(parts[0], "@") {
+				// Scoped package as direct dependency without node_modules prefix
+				pkgName = parts[0] + "/" + parts[1]
+				isTransitive = false
+			} else {
+				// This is likely a transitive dependency
+				// Extract the actual package name from the path
+				if len(parts) >= 2 && strings.HasPrefix(parts[len(parts)-2], "@") {
+					// Scoped package at the end of a path (transitive)
+					pkgName = parts[len(parts)-2] + "/" + parts[len(parts)-1]
+				} else {
+					// Regular package at the end of a path (transitive)
+					pkgName = parts[len(parts)-1]
+				}
+				
+				// Mark as transitive and build dependency path
+				isTransitive = true
+				depPath = buildDependencyPath(pkgPath)
+			}
+			
+			// Skip if we've already processed this package version
+			if pkgName == "" || processed[pkgName+"@"+pkg.Version] {
+				continue
+			}
+			
+			// Also check if this is a direct dep based on our earlier scan
+			if directDeps[pkgName] {
+				isTransitive = false
+			}
+			
+			// Mark as processed
+			processed[pkgName+"@"+pkg.Version] = true
+			
+			// Analyze the dependency
+			if analysis, err := analyzeDependency(pkgName, pkg.Version); err == nil {
+				// Add additional info for transitive deps
+				analysis.IsTransitive = isTransitive
+				if isTransitive {
+					analysis.DependencyPath = depPath
+				}
+				analyses = append(analyses, analysis)
+			} else {
+				fmt.Printf("Warning: failed to analyze %s: %v\n", pkgName, err)
+			}
+		}
+	} else {
+		// Use older format (npm 5-6)
+		fmt.Printf("📦 Analyzing lockfile (older format)...\n")
+		analyzeNpmLockDependencies(lockFile.Dependencies, "", &analyses, processed)
+	}
+
+	return analyses, nil
+}
+
+// buildDependencyPath creates a readable dependency path from a node_modules path
+func buildDependencyPath(pkgPath string) string {
+	parts := strings.Split(pkgPath, "/")
+	if len(parts) <= 2 {
+		return pkgPath
+	}
+	
+	// Build a path like "express → connect → qs"
+	var result []string
+	for i := 0; i < len(parts); i++ {
+		if parts[i] == "node_modules" {
+			continue
+		}
+		
+		// Handle scoped packages
+		if strings.HasPrefix(parts[i], "@") && i+1 < len(parts) {
+			result = append(result, parts[i]+"/"+parts[i+1])
+			i++ // Skip the next part as it's part of the scoped package
+		} else {
+			result = append(result, parts[i])
+		}
+	}
+	
+	return strings.Join(result, " → ")
+}
+
+// analyzeNpmLockDependencies recursively analyzes dependencies in older npm lock format
+func analyzeNpmLockDependencies(deps map[string]struct {
+	Version  string `json:"version"`
+	Resolved string `json:"resolved,omitempty"`
+	Requires map[string]string `json:"requires,omitempty"`
+	Dependencies interface{} `json:"dependencies,omitempty"`
+}, path string, analyses *[]PackageAnalysis, processed map[string]bool) {
+	for name, pkg := range deps {
+		// Skip if we've already processed this package
+		if processed[name+"@"+pkg.Version] {
+			continue
+		}
+		
+		// Mark as processed
+		processed[name+"@"+pkg.Version] = true
+		
+		// Determine if it's a transitive dependency
+		isTransitive := path != ""
+		
+		// Create dependency path
+		depPath := name
+		if path != "" {
+			depPath = path + " → " + name
+		}
+		
+		// Analyze the dependency
+		if analysis, err := analyzeDependency(name, pkg.Version); err == nil {
+			if isTransitive {
+				analysis.DependencyPath = depPath
+				analysis.IsTransitive = true
+			}
+			*analyses = append(*analyses, analysis)
+		} else {
+			fmt.Printf("Warning: failed to analyze %s: %v\n", name, err)
+		}
+		
+		// Recursively analyze nested dependencies if they exist
+		if pkg.Dependencies != nil {
+			// Since lock file formats can vary, use a type assertion to process nested deps
+			if nestedDeps, ok := pkg.Dependencies.(map[string]interface{}); ok {
+				// Convert to the format we need
+				convertedDeps := make(map[string]struct {
+					Version  string `json:"version"`
+					Resolved string `json:"resolved,omitempty"`
+					Requires map[string]string `json:"requires,omitempty"`
+					Dependencies interface{} `json:"dependencies,omitempty"`
+				})
+				
+				for nestedName, nestedPkg := range nestedDeps {
+					if nestedPkgMap, ok := nestedPkg.(map[string]interface{}); ok {
+						var converted struct {
+							Version  string `json:"version"`
+							Resolved string `json:"resolved,omitempty"`
+							Requires map[string]string `json:"requires,omitempty"`
+							Dependencies interface{} `json:"dependencies,omitempty"`
+						}
+						
+						// Extract version
+						if ver, ok := nestedPkgMap["version"].(string); ok {
+							converted.Version = ver
+						}
+						
+						// Extract resolved
+						if res, ok := nestedPkgMap["resolved"].(string); ok {
+							converted.Resolved = res
+						}
+						
+						// Extract requires
+						if req, ok := nestedPkgMap["requires"].(map[string]interface{}); ok {
+							converted.Requires = make(map[string]string)
+							for k, v := range req {
+								if vStr, ok := v.(string); ok {
+									converted.Requires[k] = vStr
+								}
+							}
+						}
+						
+						// Extract nested dependencies
+						if deps, ok := nestedPkgMap["dependencies"]; ok {
+							converted.Dependencies = deps
+						}
+						
+						convertedDeps[nestedName] = converted
+					}
+				}
+				
+				analyzeNpmLockDependencies(convertedDeps, depPath, analyses, processed)
+			}
+		}
+	}
+}
+
+// AnalyzeYarnLockFile analyzes a yarn.lock file and returns version information
+func AnalyzeYarnLockFile(file io.Reader) ([]PackageAnalysis, error) {
+	// Read all lines
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read yarn.lock: %v", err)
+	}
+
+	// Parse the file content
+	content := string(data)
+	lines := strings.Split(content, "\n")
+
+	// Map to store package name and resolved version
+	packages := make(map[string]string)
+	
+	var currentPackage string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		
+		// Skip comments and empty lines
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		
+		// This line defines a package
+		if strings.Contains(line, ":") && !strings.HasPrefix(line, " ") {
+			// Get the package name and clean it
+			pkgLine := strings.Split(line, ":")[0]
+			pkgLine = strings.Trim(pkgLine, "\"'")
+			
+			// Extract the package name from the line (yarn uses "pkg@version" format)
+			parts := strings.Split(pkgLine, "@")
+			if len(parts) >= 2 {
+				// Handle scoped packages (@scope/package)
+				if strings.HasPrefix(parts[0], "@") {
+					if len(parts) >= 3 {
+						currentPackage = parts[0] + "@" + parts[1]
+					}
+				} else {
+					currentPackage = parts[0]
+				}
+			}
+		}
+		
+		// This line contains the version
+		if strings.HasPrefix(line, "  version ") && currentPackage != "" {
+			parts := strings.Split(line, "\"")
+			if len(parts) >= 2 {
+				version := strings.Trim(parts[1], "\"")
+				packages[currentPackage] = version
+			}
+		}
+	}
+
+	// Create analyses from parsed packages
+	var analyses []PackageAnalysis
+	for name, version := range packages {
+		if analysis, err := analyzeDependency(name, version); err == nil {
+			analyses = append(analyses, analysis)
+		} else {
+			fmt.Printf("Warning: failed to analyze %s: %v\n", name, err)
+		}
+	}
+
+	return analyses, nil
+}
+
+// FindAndAnalyzeLockFile looks for a lock file based on the package file path and analyzes it
+func FindAndAnalyzeLockFile(packageFilePath string) ([]PackageAnalysis, error) {
+	// Determine the directory of the package file
+	dir := packageFilePath[:strings.LastIndex(packageFilePath, "/")+1]
+	if dir == "" {
+		dir = "./"
+	}
+	
+	// Try to find npm package-lock.json (most common)
+	lockPath := dir + "package-lock.json"
+	if file, err := os.Open(lockPath); err == nil {
+		defer file.Close()
+		fmt.Printf("📦 Found package-lock.json, using exact versions from lock file...\n")
+		return AnalyzeNpmLockFile(file)
+	}
+	
+	// Try to find yarn.lock
+	lockPath = dir + "yarn.lock"
+	if file, err := os.Open(lockPath); err == nil {
+		defer file.Close()
+		fmt.Printf("📦 Found yarn.lock, using exact versions from lock file...\n")
+		return AnalyzeYarnLockFile(file)
+	}
+	
+	// Try to find npm-shrinkwrap.json
+	lockPath = dir + "npm-shrinkwrap.json"
+	if file, err := os.Open(lockPath); err == nil {
+		defer file.Close()
+		fmt.Printf("📦 Found npm-shrinkwrap.json, using exact versions from lock file...\n")
+		return AnalyzeNpmLockFile(file)
+	}
+	
+	// No lock file found, return error
+	return nil, fmt.Errorf("no lock file found")
 }
 
 // getLatestVersion fetches the latest version of a package from the npm registry
@@ -246,4 +604,4 @@ func max(a, b int) int {
 		return a
 	}
 	return b
-} 
+}
