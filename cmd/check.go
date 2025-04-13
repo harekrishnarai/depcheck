@@ -97,7 +97,7 @@ Example: depcheck check express 4.17.1`,
 			
 			// Create vulnerability table
 			vulnTable := tablewriter.NewWriter(os.Stdout)
-			vulnTable.SetHeader([]string{"ADVISORY", "SEVERITY", "FIXED IN", "SOURCE", "LINKS"})
+			vulnTable.SetHeader([]string{"ADVISORY", "SEVERITY", "SCORE", "FIXED IN", "SOURCE", "LINKS"})
 			vulnTable.SetAutoWrapText(false)
 			vulnTable.SetRowLine(false)
 			vulnTable.SetColumnSeparator("│")
@@ -109,15 +109,19 @@ Example: depcheck check express 4.17.1`,
 			vulnTable.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
 
 			for _, vuln := range analysis.CVEs.Current {
-				// Format severity with color and emoji
+				// Update severity mapping logic to handle API severity levels like "MODERATE"
 				severity := "🟢 " + color.GreenString("Low")
 				switch strings.ToLower(vuln.Severity) {
 				case "critical":
 					severity = "🔴 " + color.RedString("Critical")
 				case "high":
 					severity = "🟣 " + color.HiRedString("High")
+				case "moderate":
+					severity = "🟡 " + color.YellowString("Moderate")
 				case "medium":
 					severity = "🟡 " + color.YellowString("Medium")
+				case "low":
+					severity = "🟢 " + color.GreenString("Low")
 				}
 
 				// Format source with icon
@@ -136,9 +140,13 @@ Example: depcheck check express 4.17.1`,
 					link = vuln.URL
 				}
 
+				// Format the score
+				score := fmt.Sprintf("%.1f", vuln.Score)
+
 				vulnTable.Append([]string{
 					color.CyanString(vuln.ID),
 					severity,
+					score,
 					color.YellowString(vuln.FixedIn),
 					source,
 					color.BlueString(link),
@@ -294,4 +302,4 @@ Example: depcheck check express 4.17.1`,
 
 func init() {
 	rootCmd.AddCommand(checkCmd)
-} 
+}

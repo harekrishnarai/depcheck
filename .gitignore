@@ -26,3 +26,15 @@ token.json
 
 node_modules/
 package.json
+package-lock.json
+yarn.lock
+
+# IDE files
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+*.swp
+.devcontainer/
+*.code-workspace
+depcheck
