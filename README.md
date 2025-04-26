@@ -15,7 +15,7 @@ go install github.com/harekrishnarai/depcheck@latest
 ### Check a single package version
 
 ```bash
-depcheck check express@4.18.2
+depcheck check express 4.18.2
 ```
 
 ### Check dependencies from a package file
